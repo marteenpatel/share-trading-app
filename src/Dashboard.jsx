@@ -7,9 +7,10 @@ import { db, logout } from './firebase';
 import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 import { calculateBuyCharges } from './Calculations';
 
-const Dashboard = ({ user }) => {
+const Dashboard = ({ user, onAdminLogout }) => {
   const [trades, setTrades] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedUserId, setSelectedUserId] = useState('');
   
   const [isBuyModalOpen, setIsBuyModalOpen] = useState(false);
   const [isSellModalOpen, setIsSellModalOpen] = useState(false);
@@ -25,7 +26,9 @@ const Dashboard = ({ user }) => {
   useEffect(() => {
     if (!user) return;
     
-    const q = query(collection(db, "trades"), where("userId", "==", user.uid));
+    const q = user?.role === 'admin'
+      ? query(collection(db, "trades"))
+      : query(collection(db, "trades"), where("userId", "==", user.uid));
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const tradesArray = [];
       querySnapshot.forEach((doc) => {
@@ -43,6 +46,7 @@ const Dashboard = ({ user }) => {
       await addDoc(collection(db, "trades"), {
         ...newTrade,
         userId: user.uid,
+        userName: user.displayName || user.email || 'Unknown User',
         createdAt: new Date().toISOString()
       });
     } catch (error) {
@@ -81,7 +85,8 @@ const Dashboard = ({ user }) => {
           quantity: sellQuantity,
           totalBuyCost: closedBuyCost,
           customBuyCharge: soldCustomBuyCharge,
-          userId: user.uid,
+          userId: restOfTrade.userId || user.uid,
+          userName: restOfTrade.userName || user.displayName || user.email || 'Unknown User',
           createdAt: new Date().toISOString()
         });
 
@@ -120,7 +125,11 @@ const Dashboard = ({ user }) => {
   };
 
   const handleLogout = async () => {
-    await logout();
+    if (user?.role === 'admin') {
+      if (onAdminLogout) onAdminLogout();
+    } else {
+      await logout();
+    }
   };
 
   // Summaries
@@ -136,11 +145,22 @@ const Dashboard = ({ user }) => {
       .reduce((sum, t) => sum + t.netProfitLoss, 0);
   }, [trades]);
 
+  const uniqueUsers = useMemo(() => {
+    const usersMap = new Map();
+    trades.forEach(t => {
+      if (t.userId) {
+        usersMap.set(t.userId, t.userName || t.userId);
+      }
+    });
+    return Array.from(usersMap.entries()).map(([id, name]) => ({ id, name }));
+  }, [trades]);
+
   const ledgerItems = useMemo(() => {
     let items = [];
     trades.forEach(t => {
       // Check filters for the BUY action
       let buyMatch = true;
+      if (selectedUserId && t.userId !== selectedUserId) buyMatch = false;
       const bDate = new Date(t.buyDate);
       if (startDate && new Date(startDate) > bDate) buyMatch = false;
       if (endDate && new Date(endDate) < bDate) buyMatch = false;
@@ -159,6 +179,7 @@ const Dashboard = ({ user }) => {
 
       if (t.status === 'CLOSED') {
         let sellMatch = true;
+        if (selectedUserId && t.userId !== selectedUserId) sellMatch = false;
         const sDate = new Date(t.sellDate);
         if (startDate && new Date(startDate) > sDate) sellMatch = false;
         if (endDate && new Date(endDate) < sDate) sellMatch = false;
@@ -287,15 +308,32 @@ const Dashboard = ({ user }) => {
                 Clear
               </button>
             )}
+            
+            {user?.role === 'admin' && (
+              <div className="flex items-center gap-2 px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl w-full sm:w-auto">
+                <select
+                  className="bg-transparent text-sm text-slate-300 focus:outline-none w-full"
+                  value={selectedUserId}
+                  onChange={(e) => setSelectedUserId(e.target.value)}
+                >
+                  <option value="">All Users</option>
+                  {uniqueUsers.map(u => (
+                    <option key={u.id} value={u.id}>{u.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
-          <button
-            onClick={() => setIsBuyModalOpen(true)}
-            className="flex items-center gap-2 bg-teal-500 hover:bg-teal-400 text-slate-900 px-5 py-2.5 rounded-xl font-semibold shadow-lg shadow-teal-500/20 transition-all w-full sm:w-auto justify-center"
-          >
-            <Plus size={20} />
-            Add New Buy Trade
-          </button>
+          {user?.role !== 'admin' && (
+            <button
+              onClick={() => setIsBuyModalOpen(true)}
+              className="flex items-center gap-2 bg-teal-500 hover:bg-teal-400 text-slate-900 px-5 py-2.5 rounded-xl font-semibold shadow-lg shadow-teal-500/20 transition-all w-full sm:w-auto justify-center"
+            >
+              <Plus size={20} />
+              Add New Buy Trade
+            </button>
+          )}
         </div>
 
         {/* Table */}
@@ -304,6 +342,7 @@ const Dashboard = ({ user }) => {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-800/50 border-b border-slate-700 text-slate-400 text-sm uppercase tracking-wider">
+                  {user?.role === 'admin' && <th className="px-6 py-4 font-medium">User</th>}
                   <th className="px-6 py-4 font-medium">Date</th>
                   <th className="px-6 py-4 font-medium">Stock</th>
                   <th className="px-6 py-4 font-medium text-center">Action</th>
@@ -317,7 +356,7 @@ const Dashboard = ({ user }) => {
               <tbody className="divide-y divide-slate-700/50">
                 {ledgerItems.length === 0 ? (
                   <tr>
-                    <td colSpan="8" className="px-6 py-12 text-center text-slate-400">
+                    <td colSpan={user?.role === 'admin' ? "9" : "8"} className="px-6 py-12 text-center text-slate-400">
                       <div className="flex flex-col items-center justify-center">
                         <Search size={48} className="text-slate-600 mb-4" />
                         <p className="text-lg font-medium text-slate-300">No actions found</p>
@@ -328,6 +367,11 @@ const Dashboard = ({ user }) => {
                 ) : (
                   ledgerItems.map((item) => (
                     <tr key={item.uniqueKey} className="hover:bg-slate-700/30 transition-colors group">
+                      {user?.role === 'admin' && (
+                        <td className="px-6 py-4 text-sm text-slate-400 whitespace-nowrap">
+                          {item.userName || item.userId}
+                        </td>
+                      )}
                       <td className="px-6 py-4 text-sm text-slate-300 whitespace-nowrap">
                         {new Date(item.displayDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                       </td>
